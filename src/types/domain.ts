@@ -21,52 +21,6 @@ export interface AssignedStudent {
   isActive: boolean
 }
 
-export type ApplicationStatus =
-  | 'APPLIED'
-  | 'IN_REVIEW'
-  | 'INTERVIEW'
-  | 'OFFER'
-  | 'REJECTED'
-
-/** Shape used by the list/dashboard UI — flattened for table rendering. */
-export interface JobApplication {
-  id: number | string
-  studentId: number
-  studentName: string
-  companyName: string
-  jobTitle: string
-  jobLink?: string
-  jobLocation?: string
-  jobSource?: string
-  status: ApplicationStatus
-  appliedDate: string
-  createdByRecruiterId: string
-}
-
-export interface DashboardStats {
-  totalApplications: number
-  todayApplications: number
-  assignedStudents: number
-}
-
-export interface Paginated<T> {
-  items: T[]
-  page: number
-  pageSize: number
-  totalItems: number
-  totalPages: number
-}
-
-export interface ApplicationQuery {
-  search?: string
-  studentId?: string
-  dateRange?: 'all' | 'today' | 'last7' | 'last30'
-  sortBy?: 'appliedDate'
-  sortDir?: 'asc' | 'desc'
-  page?: number
-  pageSize?: number
-}
-
 // --- Backend request / response contract --------------------------------
 
 /**
@@ -98,11 +52,4 @@ export interface CreateApplicationResponse {
   success: true
   message: string
   applicationId: number
-}
-
-export interface ApiErrorBody {
-  success: false
-  error: string
-  message: string
-  details?: string[]
 }

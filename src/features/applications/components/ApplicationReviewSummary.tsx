@@ -24,10 +24,11 @@ export function ApplicationReviewSummary() {
     { label: 'Company', value: values.companyName?.trim() || '(not set)' },
     { label: 'Job Title', value: values.jobTitle?.trim() || '(not set)' },
     { label: 'Job Source', value: jobSource || '(not set)' },
-    { label: 'Resume ID', value: values.resumeObjectId || '(not set)' },
     {
-      label: 'Cover Letter ID',
-      value: values.coverLetterObjectId?.trim() || '— none —',
+      label: 'Resume',
+      value: values.resumeObjectId
+        ? `Uploaded (ID ${values.resumeObjectId})`
+        : '(not uploaded)',
     },
   ]
 

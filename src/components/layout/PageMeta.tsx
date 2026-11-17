@@ -12,7 +12,7 @@ const PageMetaContext = React.createContext<{
 } | null>(null)
 
 export function PageMetaProvider({ children }: { children: React.ReactNode }) {
-  const [value, set] = React.useState<PageMetaValue>({ title: 'Dashboard' })
+  const [value, set] = React.useState<PageMetaValue>({ title: 'Create Application' })
   return (
     <PageMetaContext.Provider value={{ value, set }}>
       {children}

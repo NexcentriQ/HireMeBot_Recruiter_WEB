@@ -31,8 +31,6 @@ export const WIZARD_STEPS = [
   { key: 'questions', label: 'Questions & Submit' },
 ] as const
 
-export type WizardStepKey = (typeof WIZARD_STEPS)[number]['key']
-
 interface UseCreateApplicationWizardArgs {
   form: UseFormReturn<CreateApplicationFormValues>
   totalSteps?: number
@@ -78,6 +76,13 @@ export function useCreateApplicationWizard({
     scrollIntoView()
   }, [activeStep, scrollIntoView])
 
+  /** Return to the first step and forget progress (e.g. after a successful submit). */
+  const reset = useCallback(() => {
+    setActiveStep(0)
+    setMaxReached(0)
+    scrollIntoView()
+  }, [scrollIntoView])
+
   const isFirst = activeStep === 0
   const isLast = activeStep === totalSteps - 1
 
@@ -89,6 +94,7 @@ export function useCreateApplicationWizard({
     goTo,
     next,
     previous,
+    reset,
     scrollAnchor,
   }
 }

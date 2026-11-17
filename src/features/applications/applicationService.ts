@@ -1,63 +1,13 @@
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { apiClient, ApiError } from '@/lib/apiClient'
 import { env } from '@/lib/env'
 import type {
-  ApplicationQuery,
   CreateApplicationRequest,
   CreateApplicationResponse,
-  DashboardStats,
-  JobApplication,
-  Paginated,
 } from '@/types/domain'
 import { mockApi } from '@/mocks/mockApi'
 
 export const CREATE_APPLICATION_PATH = '/api/v1/recruiter/applications'
-
-export const applicationKeys = {
-  all: ['applications'] as const,
-  list: (q: ApplicationQuery) => ['applications', 'list', q] as const,
-  recent: (limit: number) => ['applications', 'recent', limit] as const,
-  stats: () => ['dashboard', 'stats'] as const,
-}
-
-export async function fetchDashboardStats(): Promise<DashboardStats> {
-  if (env.useMockApi) return mockApi.getDashboardStats()
-  const { data } = await apiClient.get<DashboardStats>('/recruiter/dashboard')
-  return data
-}
-
-export async function fetchRecentApplications(
-  limit = 5
-): Promise<JobApplication[]> {
-  if (env.useMockApi) return mockApi.getRecentApplications(limit)
-  const { data } = await apiClient.get<Paginated<JobApplication>>(
-    '/recruiter/applications',
-    {
-      params: {
-        page: 1,
-        pageSize: limit,
-        sortBy: 'appliedDate',
-        sortDir: 'desc',
-      },
-    }
-  )
-  return data.items
-}
-
-export async function listApplications(
-  q: ApplicationQuery
-): Promise<Paginated<JobApplication>> {
-  if (env.useMockApi) return mockApi.listApplications(q)
-  const { data } = await apiClient.get<Paginated<JobApplication>>(
-    '/recruiter/applications',
-    { params: q }
-  )
-  return data
-}
 
 /**
  * POST /api/v1/recruiter/applications
@@ -94,37 +44,8 @@ export async function createApplication(
   return body
 }
 
-export function useDashboardStats() {
-  return useQuery({
-    queryKey: applicationKeys.stats(),
-    queryFn: fetchDashboardStats,
-  })
-}
-
-export function useRecentApplications(limit = 5) {
-  return useQuery({
-    queryKey: applicationKeys.recent(limit),
-    queryFn: () => fetchRecentApplications(limit),
-  })
-}
-
-export function useApplicationsList(q: ApplicationQuery) {
-  return useQuery({
-    queryKey: applicationKeys.list(q),
-    queryFn: () => listApplications(q),
-    placeholderData: (prev) => prev,
-  })
-}
-
 export function useCreateApplication() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: createApplication,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: applicationKeys.all })
-      void qc.invalidateQueries({ queryKey: applicationKeys.stats() })
-    },
-  })
+  return useMutation({ mutationFn: createApplication })
 }
 
 /**
@@ -180,7 +101,7 @@ export function createApplicationErrorMessage(err: unknown): {
         return {
           title: 'Connection failed',
           description: err.possiblySent
-            ? 'Unable to reach the service. The application may have been created — check My Applications before retrying.'
+            ? 'Unable to reach the service. The application may have been created — confirm before retrying to avoid a duplicate.'
             : 'Unable to connect to the application service. Check your connection and try again.',
           retryable: !err.possiblySent,
         }

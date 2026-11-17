@@ -1,8 +1,5 @@
 import { z } from 'zod'
 
-/** Max value we trust in both JS and 64-bit int: 2^53 - 1. */
-export const MAX_SAFE_ID = Number.MAX_SAFE_INTEGER
-
 const requiredString = (label: string, max: number) =>
   z
     .string()

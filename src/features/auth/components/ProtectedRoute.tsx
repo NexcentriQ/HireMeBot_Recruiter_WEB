@@ -1,8 +1,23 @@
 import { Navigate, useLocation } from 'react-router-dom'
-import { useAuth } from '../AuthContext'
+import { useAuth, type AuthStatus } from '../AuthContext'
+import { routeForStatus } from '../authRoutes'
+import { AccountErrorScreen } from './AccountErrorScreen'
 import { LoadingState } from '@/components/common/LoadingState'
 
-export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+/**
+ * Renders `children` only when the backend-confirmed account state equals
+ * `requiredStatus` (default `authenticated`, i.e. an approved recruiter).
+ * Every other state is sent to the single route that accepts it, so a pending
+ * recruiter cannot open the dashboard and an approved one cannot reopen the
+ * registration form. This is a UX guard: the backend enforces access itself.
+ */
+export function ProtectedRoute({
+  children,
+  requiredStatus = 'authenticated',
+}: {
+  children: React.ReactNode
+  requiredStatus?: AuthStatus
+}) {
   const { status } = useAuth()
   const location = useLocation()
 
@@ -14,13 +29,15 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (status === 'unauthorized') {
-    return <Navigate to="/access-denied" replace />
-  }
+  if (status === 'error') return <AccountErrorScreen />
 
-  if (status !== 'authenticated') {
-    return <Navigate to="/login" replace state={{ from: location }} />
-  }
+  if (status === requiredStatus) return <>{children}</>
 
-  return <>{children}</>
+  return (
+    <Navigate
+      to={routeForStatus(status) ?? '/login'}
+      replace
+      state={status === 'unauthenticated' ? { from: location } : undefined}
+    />
+  )
 }

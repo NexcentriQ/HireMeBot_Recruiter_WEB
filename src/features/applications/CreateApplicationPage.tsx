@@ -80,7 +80,7 @@ export function CreateApplicationPage() {
         `Application ID: ${res.applicationId}`
       )
       form.reset()
-      navigate('/applications')
+      wizard.reset()
     } catch (err) {
       const info = createApplicationErrorMessage(err)
       toast.error(info.title, info.description)

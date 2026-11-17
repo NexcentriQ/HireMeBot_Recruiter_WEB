@@ -18,7 +18,6 @@ export async function fetchAssignedStudents(): Promise<AssignedStudent[]> {
   const { data } = await apiClient.get<unknown>('/api/v1/recruiter/students')
   const list = extractList(data)
   if (!list) {
-    // eslint-disable-next-line no-console
     console.warn(
       '[recruiter/students] Unexpected response shape:',
       data

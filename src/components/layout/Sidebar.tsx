@@ -1,13 +1,11 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FilePlus2, ListChecks, LogOut } from 'lucide-react'
+import { FilePlus2, LogOut } from 'lucide-react'
 import { BrandLogo } from '@/components/common/BrandLogo'
 import { useAuth } from '@/features/auth/AuthContext'
 import { cn } from '@/lib/utils'
 
 const navItems = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/applications/new', label: 'Create Application', icon: FilePlus2 },
-  { to: '/applications', label: 'My Applications', icon: ListChecks },
 ]
 
 export function Sidebar() {

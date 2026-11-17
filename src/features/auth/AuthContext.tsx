@@ -1,32 +1,81 @@
 import * as React from 'react'
-import { env, isDevRecruiterMode } from '@/lib/env'
 import { configureAuth } from '@/lib/apiClient'
+import { getAuthMode, type AuthMode } from '@/lib/env'
 import type { RecruiterProfile } from '@/types/domain'
+import type {
+  AccountFailure,
+  AccountRestriction,
+  ActiveRecruiterUser,
+  RecruiterAccountLookup,
+} from '@/types/recruiterAuth'
+import { classifyAccountError } from './accountErrors'
 import {
-  buildGoogleLoginUrl,
-  buildLogoutUrl,
-  clearSession,
-  decodeJwtPayload,
-  readSession,
-  type CognitoTokens,
-} from './cognitoClient'
-import { fetchRecruiterProfile } from './recruiterService'
+  continueWithGoogle,
+  getAccessToken,
+  getRecordedOAuthFailure,
+  getSessionIdentity,
+  signOutOfCognito,
+  subscribeToAuthEvents,
+} from './cognitoAuth'
+import { lookupRecruiterAccount } from './recruiterService'
+import { clearDraft } from './registrationDraft'
+import { setSessionNotice, type SessionNoticeKind } from './sessionNotice'
 
-type AuthStatus =
+/**
+ * Where the backend says this user stands. Only `authenticated` (an ACTIVE,
+ * approved recruiter confirmed by GET /api/v1/recruiters/auth/me) opens the
+ * dashboard; a Cognito session alone never does.
+ */
+export type AuthStatus =
   | 'initializing'
-  | 'authenticated'
   | 'unauthenticated'
-  | 'unauthorized'
+  | 'signup-required'
+  | 'pending'
+  | 'authenticated'
+  | 'restricted'
+  | 'error'
 
-interface AuthContextValue {
+/**
+ * Outcome of re-running the account lookup. `ok: false` is a transient failure
+ * (network, 5xx, malformed body) that left an already-established state alone;
+ * `ok: true` means the lookup produced a state, which may be any AuthStatus.
+ */
+export type RefreshResult =
+  | { ok: true; status: AuthStatus }
+  | { ok: false; failure: AccountFailure }
+
+interface AuthState {
   status: AuthStatus
+  /** Set only while `authenticated`. */
   profile: RecruiterProfile | null
-  tokens: CognitoTokens | null
-  error: string | null
-  signInWithGoogle: () => Promise<void>
-  signOut: () => void
-  completeLogin: (tokens: CognitoTokens) => Promise<void>
+  /** Set only while `restricted`. */
+  restriction: AccountRestriction | null
+  /** Set only while `error`. */
+  failure: AccountFailure | null
+  /** Friendly text for a failed or cancelled Google sign-in. */
+  oauthError: string | null
 }
+
+interface AuthContextValue extends AuthState {
+  signInWithGoogle: () => Promise<void>
+  signOut: () => Promise<void>
+  /** Re-run GET /recruiters/auth/me (deduplicated) and apply the answer. */
+  refreshAccount: () => Promise<RefreshResult>
+  /** Apply a lookup/registration failure: session end, restriction, or transient. */
+  handleAccountError: (error: unknown) => RefreshResult
+  /** The registration POST returned 201 `APPROVAL_PENDING`. */
+  markRegistrationSubmitted: () => void
+}
+
+const EMPTY: AuthState = {
+  status: 'initializing',
+  profile: null,
+  restriction: null,
+  failure: null,
+  oauthError: null,
+}
+
+const SIGNED_OUT: AuthState = { ...EMPTY, status: 'unauthenticated' }
 
 const AuthContext = React.createContext<AuthContextValue | null>(null)
 
@@ -49,208 +98,268 @@ const MOCK_PROFILE: RecruiterProfile = {
 // sign-out so mock boot stays on the login screen until they sign in again.
 const MOCK_SIGNED_OUT_KEY = 'hmb.mock.signedOut'
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = React.useState<AuthStatus>('initializing')
-  const [tokens, setTokens] = React.useState<CognitoTokens | null>(null)
-  const [profile, setProfile] = React.useState<RecruiterProfile | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
+function toProfile(user: ActiveRecruiterUser): RecruiterProfile {
+  const fullName = [user.firstName, user.lastName].filter(Boolean).join(' ')
+  return {
+    id: String(user.recruiterId),
+    email: user.email ?? '',
+    fullName: fullName || 'Recruiter',
+    role: 'RECRUITER',
+    isActive: true,
+  }
+}
 
-  const signOut = React.useCallback(() => {
-    clearSession()
-    setTokens(null)
-    setProfile(null)
-    setStatus('unauthenticated')
-    if (env.useMockApi || isDevRecruiterMode()) {
-      sessionStorage.setItem(MOCK_SIGNED_OUT_KEY, '1')
-      window.location.href = '/login'
-      return
+function legacyProfile(mode: AuthMode): RecruiterProfile {
+  if (mode === 'dev-header') {
+    return {
+      ...MOCK_PROFILE,
+      fullName: 'Dev Recruiter',
+      email: 'dev-recruiter@local',
     }
-    const url = buildLogoutUrl()
-    window.location.href = url ?? '/login'
+  }
+  return MOCK_PROFILE
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // Decided once per provider. `mock` and `dev-header` are local-only
+  // development modes that skip Cognito; `cognito` is the real flow.
+  const [mode] = React.useState<AuthMode>(getAuthMode)
+  const [state, setState] = React.useState<AuthState>(EMPTY)
+
+  const statusRef = React.useRef<AuthStatus>(state.status)
+  React.useEffect(() => {
+    statusRef.current = state.status
+  })
+
+  /** The one in-flight lookup. Guards, Strict Mode and the 401 hook share it. */
+  const inflight = React.useRef<Promise<RefreshResult> | null>(null)
+  const booted = React.useRef(false)
+
+  // --- applying backend answers ---------------------------------------
+
+  const endSession = React.useCallback((reason: SessionNoticeKind) => {
+    // The registration draft is deliberately kept: the user is about to sign
+    // in again and the draft is only restored for the same Cognito subject.
+    setSessionNotice(reason)
+    setState(SIGNED_OUT)
+    // Clears the Amplify session; the page then returns via Cognito's /logout.
+    void signOutOfCognito().catch(() => {})
   }, [])
 
-  // Wire the API client to this provider's auth state.
-  React.useEffect(() => {
-    configureAuth({
-      getToken: () => tokens?.accessToken ?? null,
-      onUnauthorized: () => {
-        clearSession()
-        setTokens(null)
-        setProfile(null)
-        setStatus('unauthenticated')
-      },
-    })
-  }, [tokens])
-
-  const resolveProfile = React.useCallback(
-    async (t: CognitoTokens) => {
-      try {
-        if (env.useMockApi) {
-          // In mock mode, display claim-derived info if available.
-          const claims = decodeJwtPayload<{
-            email?: string
-            name?: string
-            given_name?: string
-            family_name?: string
-          }>(t.idToken)
-          const fullName =
-            claims?.name ||
-            [claims?.given_name, claims?.family_name].filter(Boolean).join(' ') ||
-            MOCK_PROFILE.fullName
-          const email = claims?.email || MOCK_PROFILE.email
-          setProfile({ ...MOCK_PROFILE, email, fullName })
-          setStatus('authenticated')
-          return
-        }
-        const p = await fetchRecruiterProfile()
-        if (!p.isActive || p.role !== 'RECRUITER') {
-          setStatus('unauthorized')
-          setProfile(null)
-          return
-        }
-        setProfile(p)
-        setStatus('authenticated')
-      } catch (e) {
-        const message =
-          e instanceof Error ? e.message : 'Could not verify recruiter access.'
-        setError(message)
-        setStatus('unauthorized')
+  const applyLookup = React.useCallback(
+    (result: RecruiterAccountLookup): RefreshResult => {
+      switch (result.nextStep) {
+        case 'RECRUITER_DASHBOARD':
+          clearDraft()
+          setState({
+            ...EMPTY,
+            status: 'authenticated',
+            profile: toProfile(result.user),
+          })
+          return { ok: true, status: 'authenticated' }
+        case 'APPROVAL_PENDING':
+          clearDraft()
+          setState({ ...EMPTY, status: 'pending' })
+          return { ok: true, status: 'pending' }
+        case 'RECRUITER_SIGNUP_FORM':
+          setState({ ...EMPTY, status: 'signup-required' })
+          return { ok: true, status: 'signup-required' }
       }
     },
     []
   )
 
-  // Boot: restore session + mock-mode shortcut.
-  React.useEffect(() => {
-    let active = true
-    async function boot() {
-      // In mock mode, auto-authenticate so the UI is usable — but only
-      // when the user has not just signed out of this browser tab.
-      if (env.useMockApi) {
-        if (sessionStorage.getItem(MOCK_SIGNED_OUT_KEY) === '1') {
-          if (active) setStatus('unauthenticated')
-          return
-        }
-        setTokens({
-          accessToken: 'mock-access-token',
-          idToken: 'mock-id-token',
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        })
-        if (active) {
-          setProfile(MOCK_PROFILE)
-          setStatus('authenticated')
-        }
-        return
-      }
-
-      // Dev-integration mode: real backend using the X-Dev-Recruiter-Id
-      // header. We skip Cognito and auto-authorize so the UI is reachable.
-      if (isDevRecruiterMode()) {
-        if (sessionStorage.getItem(MOCK_SIGNED_OUT_KEY) === '1') {
-          if (active) setStatus('unauthenticated')
-          return
-        }
-        if (active) {
-          setProfile({
-            ...MOCK_PROFILE,
-            fullName: 'Dev Recruiter',
-            email: `dev-recruiter-${env.devRecruiterId}@local`,
+  const handleAccountError = React.useCallback(
+    (error: unknown): RefreshResult => {
+      const classified = classifyAccountError(error)
+      switch (classified.kind) {
+        case 'session':
+          endSession(classified.reason)
+          return { ok: true, status: 'unauthenticated' }
+        case 'restricted':
+          clearDraft()
+          setState({
+            ...EMPTY,
+            status: 'restricted',
+            restriction: classified.restriction,
           })
-          setStatus('authenticated')
+          return { ok: true, status: 'restricted' }
+        case 'transient':
+          // A transient failure never discards a state the backend already
+          // confirmed (for example the pending page after "Check again").
+          setState((prev) =>
+            prev.status === 'initializing' || prev.status === 'error'
+              ? { ...EMPTY, status: 'error', failure: classified.failure }
+              : prev
+          )
+          return { ok: false, failure: classified.failure }
+      }
+    },
+    [endSession]
+  )
+
+  const refreshAccount = React.useCallback((): Promise<RefreshResult> => {
+    if (mode !== 'cognito') {
+      return Promise.resolve({ ok: true, status: statusRef.current })
+    }
+    if (inflight.current) return inflight.current
+    const run = (async (): Promise<RefreshResult> => {
+      try {
+        return applyLookup(await lookupRecruiterAccount())
+      } catch (error) {
+        return handleAccountError(error)
+      }
+    })().finally(() => {
+      if (inflight.current === run) inflight.current = null
+    })
+    inflight.current = run
+    return run
+  }, [mode, applyLookup, handleAccountError])
+
+  // --- API client wiring ----------------------------------------------
+
+  React.useEffect(() => {
+    configureAuth({
+      // Called per request: Amplify returns a fresh token when one is expiring.
+      getToken: () => (mode === 'cognito' ? getAccessToken() : null),
+      // A 401 from any API is not trusted as "signed out" by itself: re-ask the
+      // backend who this user is and follow the answer (deduplicated).
+      onUnauthorized: () => {
+        if (mode === 'cognito') void refreshAccount()
+      },
+    })
+  }, [mode, refreshAccount])
+
+  // --- boot: restore the session, then ALWAYS ask the backend ---------
+
+  React.useEffect(() => {
+    // Strict Mode runs effects twice in development; boot exactly once.
+    if (booted.current) return
+    booted.current = true
+
+    async function boot() {
+      if (mode === 'mock' || mode === 'dev-header') {
+        // Local-only development modes. They never talk to Cognito.
+        if (sessionStorage.getItem(MOCK_SIGNED_OUT_KEY) === '1') {
+          setState(SIGNED_OUT)
+          return
         }
+        setState({
+          ...EMPTY,
+          status: 'authenticated',
+          profile: legacyProfile(mode),
+        })
         return
       }
 
-      const existing = readSession()
-      if (!existing || existing.expiresAt < Date.now()) {
-        clearSession()
-        if (active) setStatus('unauthenticated')
+      let identity
+      try {
+        // On /auth/callback this waits for Amplify to finish the code exchange.
+        identity = await getSessionIdentity()
+      } catch (error) {
+        handleAccountError(error)
         return
       }
-      if (active) {
-        // Prime the API client with the restored token BEFORE the first
-        // authenticated request. React state updates are async, so relying
-        // on the `tokens`-effect to re-call configureAuth would race.
-        configureAuth({
-          getToken: () => existing.accessToken,
-          onUnauthorized: () => {
-            clearSession()
-            setTokens(null)
-            setProfile(null)
-            setStatus('unauthenticated')
-          },
-        })
-        setTokens(existing)
-        await resolveProfile(existing)
+      if (!identity) {
+        if (/[?&](code|error)=/.test(window.location.search)) {
+          // A failed OAuth redirect is reported through Amplify's Hub a few
+          // microtasks AFTER the session wait above is released. Let it land so
+          // the callback page can say what went wrong.
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+        setState({ ...SIGNED_OUT, oauthError: getRecordedOAuthFailure() })
+        return
       }
+      await refreshAccount()
     }
     void boot()
-    return () => {
-      active = false
-    }
-  }, [resolveProfile])
+  }, [mode, refreshAccount, handleAccountError])
+
+  // --- Amplify events --------------------------------------------------
+
+  React.useEffect(() => {
+    if (mode !== 'cognito') return
+    return subscribeToAuthEvents((event) => {
+      const status = statusRef.current
+      switch (event.type) {
+        case 'oauthFailure':
+          setState((prev) => ({ ...prev, oauthError: event.message }))
+          break
+        case 'signedOut':
+          // Our own sign-out, or another tab's.
+          if (status !== 'initializing' && status !== 'unauthenticated') {
+            clearDraft()
+            setState(SIGNED_OUT)
+          }
+          break
+        case 'sessionExpired':
+          // Keep the draft: it is restored for the same Google account.
+          if (status !== 'initializing' && status !== 'unauthenticated') {
+            setSessionNotice('session-ended')
+            setState(SIGNED_OUT)
+          }
+          break
+      }
+    })
+  }, [mode])
+
+  // --- actions ---------------------------------------------------------
 
   const signInWithGoogle = React.useCallback(async () => {
-    if (env.useMockApi) {
-      // Mock mode: pretend to log in immediately.
+    if (mode === 'mock' || mode === 'dev-header') {
       sessionStorage.removeItem(MOCK_SIGNED_OUT_KEY)
-      const t: CognitoTokens = {
-        accessToken: 'mock-access-token',
-        idToken: 'mock-id-token',
-        expiresAt: Date.now() + 60 * 60 * 1000,
-      }
-      setTokens(t)
-      setProfile(MOCK_PROFILE)
-      setStatus('authenticated')
-      window.location.href = '/dashboard'
-      return
-    }
-
-    if (isDevRecruiterMode()) {
-      sessionStorage.removeItem(MOCK_SIGNED_OUT_KEY)
-      setProfile({
-        ...MOCK_PROFILE,
-        fullName: 'Dev Recruiter',
-        email: `dev-recruiter-${env.devRecruiterId}@local`,
+      setState({
+        ...EMPTY,
+        status: 'authenticated',
+        profile: legacyProfile(mode),
       })
-      setStatus('authenticated')
-      window.location.href = '/dashboard'
+      window.location.href = '/applications/new'
       return
     }
-    const url = await buildGoogleLoginUrl()
-    window.location.href = url
+    const outcome = await continueWithGoogle()
+    // Amplify still holds a session (e.g. a stale tab): resolve it through the
+    // backend instead of redirecting to Google again.
+    if (outcome === 'already-signed-in') await refreshAccount()
+  }, [mode, refreshAccount])
+
+  const signOut = React.useCallback(async () => {
+    clearDraft()
+    setState(SIGNED_OUT)
+    if (mode !== 'cognito') {
+      sessionStorage.setItem(MOCK_SIGNED_OUT_KEY, '1')
+      window.location.href = '/login'
+      return
+    }
+    try {
+      await signOutOfCognito()
+    } catch {
+      // Amplify clears the local tokens before it redirects, so the user is
+      // signed out of this app even if the Cognito logout redirect failed.
+    }
+  }, [mode])
+
+  const markRegistrationSubmitted = React.useCallback(() => {
+    clearDraft()
+    setState({ ...EMPTY, status: 'pending' })
   }, [])
-
-  const completeLogin = React.useCallback(
-    async (t: CognitoTokens) => {
-      // Prime the API client synchronously so the first authenticated
-      // request after the OAuth callback has the Authorization header.
-      configureAuth({
-        getToken: () => t.accessToken,
-        onUnauthorized: () => {
-          clearSession()
-          setTokens(null)
-          setProfile(null)
-          setStatus('unauthenticated')
-        },
-      })
-      setTokens(t)
-      await resolveProfile(t)
-    },
-    [resolveProfile]
-  )
 
   const value = React.useMemo<AuthContextValue>(
     () => ({
-      status,
-      profile,
-      tokens,
-      error,
+      ...state,
       signInWithGoogle,
       signOut,
-      completeLogin,
+      refreshAccount,
+      handleAccountError,
+      markRegistrationSubmitted,
     }),
-    [status, profile, tokens, error, signInWithGoogle, signOut, completeLogin]
+    [
+      state,
+      signInWithGoogle,
+      signOut,
+      refreshAccount,
+      handleAccountError,
+      markRegistrationSubmitted,
+    ]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

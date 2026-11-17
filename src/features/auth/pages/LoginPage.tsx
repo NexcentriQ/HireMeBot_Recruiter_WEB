@@ -1,16 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { ClipboardList, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/common/BrandLogo'
 import { GoogleIcon } from '@/components/common/GoogleIcon'
+import { LoadingState } from '@/components/common/LoadingState'
 import { useAuth } from '../AuthContext'
+import { routeForStatus } from '../authRoutes'
+import { takeSessionNotice } from '../sessionNotice'
+import { AccountErrorScreen } from '../components/AccountErrorScreen'
 import { cognitoIsConfigured, env, isDevRecruiterMode } from '@/lib/env'
 import { useToast } from '@/components/ui/toast'
 
 export function LoginPage() {
   const { signInWithGoogle, status } = useAuth()
   const [submitting, setSubmitting] = useState(false)
+  // Synchronous guard: a double click must not start two redirects before the
+  // first render has disabled the button.
+  const startedRef = useRef(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const toast = useToast()
   const canSignIn =
     env.useMockApi || isDevRecruiterMode() || cognitoIsConfigured()
@@ -20,11 +28,42 @@ export function LoginPage() {
     document.title = 'Sign in · HireMeBot Recruiter'
   }, [])
 
-  if (status === 'authenticated') {
-    return <Navigate to="/dashboard" replace />
+  // Why the user is back here (expired session, non-Google account, ...).
+  useEffect(() => {
+    const text = takeSessionNotice()
+    if (text) setNotice(text)
+  }, [])
+
+  // Coming back from the Cognito Hosted UI through the browser's back button
+  // restores this page from the bfcache with the button still disabled.
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent) {
+      if (event.persisted) {
+        startedRef.current = false
+        setSubmitting(false)
+      }
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
+
+  if (status === 'initializing') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-brand-bg">
+        <LoadingState label="Checking your account…" />
+      </div>
+    )
+  }
+
+  if (status === 'error') return <AccountErrorScreen />
+
+  // Signed in already: go wherever the backend says this account belongs.
+  if (status !== 'unauthenticated') {
+    return <Navigate to={routeForStatus(status) ?? '/login'} replace />
   }
 
   async function handleSignIn() {
+    if (startedRef.current) return
     if (!canSignIn) {
       toast.error(
         'Authentication not configured',
@@ -32,12 +71,16 @@ export function LoginPage() {
       )
       return
     }
+    startedRef.current = true
     setSubmitting(true)
     try {
       await signInWithGoogle()
+      // On success the browser is already leaving for Google; keep the button
+      // disabled so it cannot be clicked twice.
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Sign-in failed.'
       toast.error('Could not start sign-in', message)
+      startedRef.current = false
       setSubmitting(false)
     }
   }
@@ -82,6 +125,15 @@ export function LoginPage() {
               <p className="mt-2 text-sm text-brand-muted">Recruiter Portal</p>
             </div>
 
+            {notice && (
+              <p
+                role="status"
+                className="w-full max-w-sm rounded-md bg-blue-50 px-3 py-2 text-center text-sm text-brand-blue"
+              >
+                {notice}
+              </p>
+            )}
+
             <Button
               variant="outline"
               size="lg"
@@ -93,9 +145,10 @@ export function LoginPage() {
               Continue with Google
             </Button>
 
-            <p className="flex items-center gap-2 text-xs text-brand-muted">
-              <Info className="h-3.5 w-3.5" />
-              Only authorized recruiter accounts can sign in.
+            <p className="flex max-w-sm items-start gap-2 text-xs text-brand-muted">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              New recruiters register after signing in. Access to the portal
+              begins once your account is approved.
             </p>
 
             {env.useMockApi && (

@@ -20,21 +20,3 @@ export function LoadingState({
     </div>
   )
 }
-
-export function SkeletonLine({ className }: { className?: string }) {
-  return (
-    <div
-      className={cn('h-4 w-full animate-pulse rounded bg-slate-200', className)}
-    />
-  )
-}
-
-export function SkeletonCard() {
-  return (
-    <div className="space-y-3 rounded-xl border border-brand-border bg-white p-6">
-      <SkeletonLine className="h-5 w-1/3" />
-      <SkeletonLine className="h-8 w-2/3" />
-      <SkeletonLine className="h-3 w-1/2" />
-    </div>
-  )
-}

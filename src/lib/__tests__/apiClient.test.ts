@@ -23,7 +23,6 @@ vi.mock('@/lib/env', () => ({
   },
   isDevRecruiterMode: () => envMock.state.isDevRecruiterMode,
   cognitoIsConfigured: () => false,
-  devRecruiterIdNumber: () => 1000000001,
 }))
 
 import { apiClient, configureAuth } from '../apiClient'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cn, getInitials, formatDate, isSameDay } from '../utils'
+import { cn, getInitials } from '../utils'
 
 describe('cn', () => {
   it('merges tailwind classes and drops duplicates', () => {
@@ -21,29 +21,5 @@ describe('getInitials', () => {
   })
   it('handles empty input', () => {
     expect(getInitials('')).toBe('')
-  })
-})
-
-describe('formatDate', () => {
-  it('returns an em-dash for null-ish input', () => {
-    expect(formatDate(null)).toBe('—')
-    expect(formatDate(undefined)).toBe('—')
-  })
-  it('formats ISO strings into human dates', () => {
-    const out = formatDate('2026-10-31T12:00:00Z')
-    expect(out).toMatch(/2026/)
-  })
-})
-
-describe('isSameDay', () => {
-  it('compares calendar day only', () => {
-    const a = new Date('2026-01-01T01:00:00')
-    const b = new Date('2026-01-01T23:00:00')
-    expect(isSameDay(a, b)).toBe(true)
-  })
-  it('returns false across days', () => {
-    const a = new Date('2026-01-01T23:00:00')
-    const b = new Date('2026-01-02T00:30:00')
-    expect(isSameDay(a, b)).toBe(false)
   })
 })

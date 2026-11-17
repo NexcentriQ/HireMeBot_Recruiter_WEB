@@ -15,33 +15,8 @@ describe('mockApi', () => {
     expect(s.every((x) => typeof x.id === 'number')).toBe(true)
   })
 
-  it('paginates applications', async () => {
-    const page1 = await mockApi.listApplications({ page: 1, pageSize: 5 })
-    expect(page1.items.length).toBeLessThanOrEqual(5)
-    expect(page1.totalItems).toBeGreaterThan(0)
-  })
-
-  it('searches by company name case-insensitively', async () => {
-    const r = await mockApi.listApplications({
-      search: 'amazon',
-      pageSize: 50,
-    })
-    expect(r.items.length).toBeGreaterThan(0)
-    for (const item of r.items) {
-      const hay = (
-        item.companyName +
-        ' ' +
-        item.jobTitle +
-        ' ' +
-        item.studentName
-      ).toLowerCase()
-      expect(hay.includes('amazon')).toBe(true)
-    }
-  })
-
   it('creates an application using the real API shape', async () => {
     const students = await mockApi.getAssignedStudents()
-    const before = await mockApi.listApplications({ page: 1, pageSize: 5 })
     const created = await mockApi.createApplication({
       studentId: students[0].id,
       application: {
@@ -55,8 +30,6 @@ describe('mockApi', () => {
     })
     expect(created.success).toBe(true)
     expect(typeof created.applicationId).toBe('number')
-    const after = await mockApi.listApplications({ page: 1, pageSize: 5 })
-    expect(after.totalItems).toBe(before.totalItems + 1)
   })
 
   it('rejects creation for an unassigned student', async () => {
